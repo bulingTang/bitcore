@@ -11,8 +11,7 @@ var BufferWriter = bitcore.encoding.BufferWriter;
 var Opcode = bitcore.Opcode;
 var _ = require('lodash');
 
-var script_valid = require('../data/bitcoind/script_valid');
-var script_invalid = require('../data/bitcoind/script_invalid');
+var script_tests = require('../data/bitcoind/script_tests');
 var tx_valid = require('../data/bitcoind/tx_valid');
 var tx_invalid = require('../data/bitcoind/tx_invalid');
 
@@ -139,15 +138,16 @@ describe('Interpreter', function() {
       var tx = new Transaction()
         .from(utxo)
         .to(toAddress, 100000)
-        .sign(privateKey);
+        .sign(privateKey, 1);
 
       // we then extract the signature from the first input
       var inputIndex = 0;
-      var signature = tx.getSignatures(privateKey)[inputIndex].signature;
+      var signature = tx.getSignatures(privateKey, 1)[inputIndex].signature;
 
       var scriptSig = Script.buildPublicKeyHashIn(publicKey, signature);
       var flags = Interpreter.SCRIPT_VERIFY_P2SH | Interpreter.SCRIPT_VERIFY_STRICTENC;
       var verified = Interpreter().verify(scriptSig, scriptPubkey, tx, inputIndex, flags);
+
       verified.should.equal(true);
     });
   });
@@ -185,6 +185,32 @@ describe('Interpreter', function() {
     if (flagstr.indexOf('CHECKLOCKTIMEVERIFY') !== -1) {
       flags = flags | Interpreter.SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
+    if (flagstr.indexOf('CHECKSEQUENCEVERIFY') !== -1) {
+      flags = flags | Interpreter.SCRIPT_VERIFY_CHECKSEQUENCEVERIFY;
+    }
+    if (flagstr.indexOf('NULLFAIL') !== -1) {
+      flags = flags | Interpreter.SCRIPT_VERIFY_NULLFAIL;
+    }
+
+    if (flagstr.indexOf('CLEANSTACK') !== -1) {
+      flags = flags | Interpreter.SCRIPT_VERIFY_CLEANSTACK;
+    }
+
+    if (flagstr.indexOf('FORKID') !== -1) {
+      flags = flags | Interpreter.SCRIPT_ENABLE_SIGHASH_FORKID;
+    }
+
+    if (flagstr.indexOf('REPLAY_PROTECTION') !== -1) {
+      flags = flags | Interpreter.SCRIPT_ENABLE_REPLAY_PROTECTION;
+    }
+
+    if (flagstr.indexOf('CHECKDATASIG') !== -1) {
+      flags = flags | Interpreter.SCRIPT_ENABLE_CHECKDATASIG;
+    }
+
+    if (flagstr.indexOf('MINIMALIF') !== -1) {
+      flags = flags | Interpreter.SCRIPT_VERIFY_MINIMALIF;
+    }
     return flags;
   };
 
@@ -194,10 +220,14 @@ describe('Interpreter', function() {
     Script.fromString(s).toString().should.equal(s);
   };
 
-  var testFixture = function(vector, expected) {
+  var testFixture = function(vector, expected, extraData) {
     var scriptSig = Script.fromBitcoindString(vector[0]);
     var scriptPubkey = Script.fromBitcoindString(vector[1]);
     var flags = getFlags(vector[2]);
+    var inputAmount = 0;
+    if (extraData) {
+      inputAmount = extraData[0] * 1e8;
+    }
 
     var hashbuf = new Buffer(32);
     hashbuf.fill(0);
@@ -210,7 +240,7 @@ describe('Interpreter', function() {
     }));
     credtx.addOutput(new Transaction.Output({
       script: scriptPubkey,
-      satoshis: 0
+      satoshis: inputAmount, 
     }));
     var idbuf = credtx.id;
 
@@ -223,33 +253,39 @@ describe('Interpreter', function() {
     }));
     spendtx.addOutput(new Transaction.Output({
       script: new Script(),
-      satoshis: 0
+      satoshis: inputAmount,
     }));
 
     var interp = new Interpreter();
-    var verified = interp.verify(scriptSig, scriptPubkey, spendtx, 0, flags);
+    var verified = interp.verify(scriptSig, scriptPubkey, spendtx, 0, flags, new BN(inputAmount));
     verified.should.equal(expected);
   };
   describe('bitcoind script evaluation fixtures', function() {
-    var testAllFixtures = function(set, expected) {
-      var c = 0;
+    var testAllFixtures = function(set) {
+      var c = 0; var l = set.length;
       set.forEach(function(vector) {
         if (vector.length === 1) {
           return;
         }
         c++;
-        var descstr = vector[3];
+
+        var extraData;
+        if (_.isArray (vector[0])) {
+          extraData = vector.shift();
+        }
+
         var fullScriptString = vector[0] + ' ' + vector[1];
+        var expected = vector[3] == 'OK';
+        var descstr = vector[4];
         var comment = descstr ? (' (' + descstr + ')') : '';
-        it('should pass script_' + (expected ? '' : 'in') + 'valid ' +
-          'vector #' + c + ': ' + fullScriptString + comment,
-          function() {
-            testFixture(vector, expected);
-          });
+        var txt = 'should ' +( vector[3] == 'OK' ? 'PASS' : 'FAIL') + ' script_tests ' +
+            'vector #' + c + '/ ' + l + ': ' + fullScriptString + comment;
+
+        it(txt, function() { testFixture(vector, expected, extraData); });
+
       });
     };
-    testAllFixtures(script_valid, true);
-    testAllFixtures(script_invalid, false);
+    testAllFixtures(script_tests);
 
   });
   describe('bitcoind transaction evaluation fixtures', function() {
@@ -264,8 +300,8 @@ describe('Interpreter', function() {
         it('should pass tx_' + (expected ? '' : 'in') + 'valid vector ' + cc, function() {
           var inputs = vector[0];
           var txhex = vector[1];
-          var flags = getFlags(vector[2]);
 
+          var flags = getFlags(vector[2]);
           var map = {};
           inputs.forEach(function(input) {
             var txid = input[0];
@@ -298,6 +334,7 @@ describe('Interpreter', function() {
           var txVerified = tx.verify();
           txVerified = (txVerified === true) ? true : false;
           allInputsVerified = allInputsVerified && txVerified;
+
           allInputsVerified.should.equal(expected);
 
         });
